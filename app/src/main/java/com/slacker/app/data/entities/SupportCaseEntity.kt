@@ -46,5 +46,16 @@ data class SupportCaseEntity(
     val labsReviewDone: Boolean = false,
     val finalDone: Boolean = false,
     val rcaDone: Boolean = false,
-    val statusHistory: String = ""
+    val statusHistory: String = "",
+
+    // Stored SLA outcomes — written the moment the case crosses each stage's
+    // gate status (see SlaCalculator.reconcile). Empty string = not scored yet.
+    val triageResult: String = "",          // "", "PASSED" or "BREACHED"
+    val triageEvaluatedAtEpochMillis: Long? = null,
+    val labsResult: String = "",
+    val labsEvaluatedAtEpochMillis: Long? = null,
+    val finalResult: String = "",
+    val finalEvaluatedAtEpochMillis: Long? = null,
+    val rcaResult: String = "",
+    val rcaEvaluatedAtEpochMillis: Long? = null
 )

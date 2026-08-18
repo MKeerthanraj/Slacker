@@ -20,20 +20,25 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontWeight
+import com.slacker.app.data.SLA_BREACHED
+import com.slacker.app.data.SLA_PASSED
+import com.slacker.app.data.SlaCalculator
 import com.slacker.app.data.entities.CaseCriticality
+import com.slacker.app.data.entities.SeverityConfigEntity
 import com.slacker.app.data.entities.CaseStatus
 import com.slacker.app.data.entities.SupportCaseEntity
 import com.slacker.app.data.entities.TaskEntity
@@ -120,23 +125,36 @@ private fun repeatBase(value: String): String = value.substringBefore(":").ifBla
 
 private fun repeatDetail(value: String): String = value.substringAfter(":", "")
 
-private fun encodeStatusHistory(history: Map<CaseStatus, String>): String =
-    history.mapNotNull { (status, value) ->
-        parseDateInput(value)?.let { "${status.name}:$it" }
-    }.joinToString("|")
+private val slaGateStatuses = setOf(
+    CaseStatus.UNDER_INITIAL_REVIEW, CaseStatus.ON_HOLD, CaseStatus.READY_FOR_DEVELOPMENT,
+    CaseStatus.PENDING_OUTSIDE_LABS, CaseStatus.DONE_READY_TO_DEPLOY, CaseStatus.RCA_COMPLETE
+)
 
-private fun decodeStatusHistory(value: String): Map<CaseStatus, String> =
-    value.split("|")
-        .mapNotNull { entry ->
-            val statusName = entry.substringBefore(":", "")
-            val millis = entry.substringAfter(":", "").toLongOrNull() ?: return@mapNotNull null
-            val status = runCatching { CaseStatus.valueOf(statusName) }.getOrNull() ?: return@mapNotNull null
-            status to formatDateInput(millis)
-        }
-        .toMap()
-
-private fun requiredHistoryStatuses(current: CaseStatus): List<CaseStatus> =
-    CaseStatus.entries.takeWhile { it != current }.filter { it != CaseStatus.NEW }
+/**
+ * Rebuilds the status history from the four SLA completion-date fields.
+ * One canonical gate status per stage carries the timestamp; non-gate
+ * entries (live transition stamps, Done No Code Changes) are kept as-is.
+ * Only stages the selected status has actually passed are written.
+ */
+private fun buildStatusHistory(
+    existing: Map<CaseStatus, Long>,
+    status: CaseStatus,
+    triageDone: String,
+    labsDone: String,
+    finalDone: String,
+    rcaDone: String
+): String {
+    val entries = existing.filterKeys { it !in slaGateStatuses }.toMutableMap()
+    if (status != CaseStatus.NEW)
+        parseDateInput(triageDone)?.let { entries[CaseStatus.UNDER_INITIAL_REVIEW] = it }
+    if (status.ordinal >= CaseStatus.ON_HOLD.ordinal)
+        parseDateInput(labsDone)?.let { entries[CaseStatus.READY_FOR_DEVELOPMENT] = it }
+    if (status.ordinal >= CaseStatus.DONE_READY_TO_DEPLOY.ordinal)
+        parseDateInput(finalDone)?.let { entries[CaseStatus.DONE_READY_TO_DEPLOY] = it }
+    if (status == CaseStatus.RCA_COMPLETE || status == CaseStatus.DONE_NO_CODE_CHANGES)
+        parseDateInput(rcaDone)?.let { entries[CaseStatus.RCA_COMPLETE] = it }
+    return entries.entries.joinToString("|") { "${it.key.name}:${it.value}" }
+}
 
 @Composable
 fun TaskEditorDialog(
@@ -188,6 +206,7 @@ fun TaskEditorDialog(
 fun CaseEditorDialog(
     initial: SupportCaseEntity,
     productOptions: List<String>,
+    config: SeverityConfigEntity? = null,
     onDismiss: () -> Unit,
     onSave: (SupportCaseEntity) -> Unit
 ) {
@@ -199,7 +218,19 @@ fun CaseEditorDialog(
     var created by remember(initial) { mutableStateOf(formatDateInput(initial.createdAtEpochMillis)) }
     var assignee by remember(initial) { mutableStateOf(initial.assignee) }
     var notes by remember(initial) { mutableStateOf(initial.notes) }
-    val historyDates = remember(initial) { mutableStateMapOf<CaseStatus, String>().apply { putAll(decodeStatusHistory(initial.statusHistory)) } }
+    val existingHistory = remember(initial) { SlaCalculator.parseHistory(initial.statusHistory) }
+    var triageDoneDate by remember(initial) { mutableStateOf(formatDateInput(existingHistory[CaseStatus.UNDER_INITIAL_REVIEW])) }
+    var labsDoneDate by remember(initial) {
+        mutableStateOf(formatDateInput(listOfNotNull(
+            existingHistory[CaseStatus.ON_HOLD],
+            existingHistory[CaseStatus.READY_FOR_DEVELOPMENT],
+            existingHistory[CaseStatus.PENDING_OUTSIDE_LABS]
+        ).minOrNull()))
+    }
+    var finalDoneDate by remember(initial) {
+        mutableStateOf(formatDateInput(existingHistory[CaseStatus.DONE_READY_TO_DEPLOY] ?: initial.movedToDoneAtEpochMillis))
+    }
+    var rcaDoneDate by remember(initial) { mutableStateOf(formatDateInput(existingHistory[CaseStatus.RCA_COMPLETE])) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -216,17 +247,35 @@ fun CaseEditorDialog(
                     status = CaseStatus.entries.first { caseStatusStyle(it).label == selected }
                 }
                 DateTimeField("Created date", created, { created = it })
-                val historyStatuses = requiredHistoryStatuses(status)
-                if (historyStatuses.isNotEmpty()) {
-                    Text("Known status history", style = MaterialTheme.typography.titleSmall)
-                    historyStatuses.forEach { historyStatus ->
-                        DateTimeField(
-                            caseStatusStyle(historyStatus).label,
-                            historyDates[historyStatus].orEmpty(),
-                            { historyDates[historyStatus] = it }
-                        )
+                if (status != CaseStatus.NEW) {
+                    Text("SLA completion dates", style = MaterialTheme.typography.titleSmall)
+                    DateTimeField("Initial Triage completed", triageDoneDate) { triageDoneDate = it }
+                    if (status.ordinal >= CaseStatus.ON_HOLD.ordinal)
+                        DateTimeField("Labs Review completed", labsDoneDate) { labsDoneDate = it }
+                    if (status.ordinal >= CaseStatus.DONE_READY_TO_DEPLOY.ordinal)
+                        DateTimeField("Final SLA completed (moved to Done)", finalDoneDate) { finalDoneDate = it }
+                    if (status == CaseStatus.RCA_COMPLETE || status == CaseStatus.DONE_NO_CODE_CHANGES)
+                        DateTimeField("RCA completed", rcaDoneDate) { rcaDoneDate = it }
+                    Text("Each SLA is measured from the created date. Unknown dates can stay blank.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                }
+                if (config != null) {
+                    Text("SLA history", style = MaterialTheme.typography.titleSmall)
+                    SlaCalculator.stageStates(initial, config).forEach { stage ->
+                        val line = when {
+                            stage.result == SLA_PASSED ->
+                                "✅ Passed" + (stage.evaluatedAtEpochMillis?.let { " on ${formatDate(it)}" } ?: "")
+                            stage.result == SLA_BREACHED ->
+                                "❌ Breached" + (stage.evaluatedAtEpochMillis?.let { " on ${formatDate(it)}" } ?: "") +
+                                    (stage.dueAtEpochMillis?.let { " (was due ${formatDate(it)})" } ?: "")
+                            stage.gateReached -> "No timing recorded — add the status dates above and save"
+                            stage.dueAtEpochMillis != null -> "⏳ Running — due ${formatDate(stage.dueAtEpochMillis)}"
+                            else -> "⏳ Starts when the case reaches Done"
+                        }
+                        Column {
+                            Text(stage.name, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                            Text(line, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                        }
                     }
-                    Text("Use Pick for any dates you know. Unknown dates can stay blank.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
                 }
                 OutlinedTextField(assignee, { assignee = it }, label = { Text("Assignee") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(notes, { notes = it }, label = { Text("Notes") }, modifier = Modifier.fillMaxWidth(), minLines = 5)
@@ -236,7 +285,7 @@ fun CaseEditorDialog(
             Button(
                 enabled = title.isNotBlank(),
                 onClick = {
-                    onSave(initial.copy(title = title.trim(), description = description, productAlignment = product.ifBlank { productOptions.firstOrNull().orEmpty() }, criticality = criticality, status = status, createdAtEpochMillis = parseDateInput(created) ?: initial.createdAtEpochMillis, assignee = assignee, notes = notes, statusHistory = encodeStatusHistory(historyDates)))
+                    onSave(initial.copy(title = title.trim(), description = description, productAlignment = product.ifBlank { productOptions.firstOrNull().orEmpty() }, criticality = criticality, status = status, createdAtEpochMillis = parseDateInput(created) ?: initial.createdAtEpochMillis, assignee = assignee, notes = notes, statusHistory = buildStatusHistory(existingHistory, status, triageDoneDate, labsDoneDate, finalDoneDate, rcaDoneDate)))
                 }
             ) { Text("Save") }
         },
@@ -293,7 +342,7 @@ private fun SelectField(label: String, value: String, options: List<String>, onC
             readOnly = true,
             label = { Text(label) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-            modifier = Modifier.menuAnchor().fillMaxWidth()
+            modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth()
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             options.forEach {

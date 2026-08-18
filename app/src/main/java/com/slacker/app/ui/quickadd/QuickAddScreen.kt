@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -52,6 +53,7 @@ fun QuickAddScreen(viewModel: AppViewModel) {
     var editingCase by remember { mutableStateOf(false) }
     var draftPrompt by remember { mutableStateOf("") }
     val chatLines = remember { mutableStateListOf<ChatLine>() }
+    val configs by viewModel.severityConfigs.collectAsState()
     val scope = rememberCoroutineScope()
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -194,7 +196,7 @@ fun QuickAddScreen(viewModel: AppViewModel) {
     }
     if (editingCase) {
         draftCase?.let {
-            CaseEditorDialog(it, productOptions = viewModel.productAlignments.value, onDismiss = { editingCase = false }, onSave = { saved ->
+            CaseEditorDialog(it, productOptions = viewModel.productAlignments.value, config = configs.firstOrNull { c -> c.severityLevel == it.severityLevel }, onDismiss = { editingCase = false }, onSave = { saved ->
                 draftCase = saved
                 editingCase = false
             })

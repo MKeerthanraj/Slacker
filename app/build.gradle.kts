@@ -5,6 +5,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("com.google.devtools.ksp")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 // Read GROQ_API_KEY from local.properties so it never gets committed to git
@@ -13,7 +14,7 @@ val localPropsFile = rootProject.file("local.properties")
 if (localPropsFile.exists()) {
     localProps.load(localPropsFile.inputStream())
 }
-val groqApiKey: String = localProps.getProperty("GROQ_API_KEY") ?: "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"
+val groqApiKey: String = localProps.getProperty("GROQ_API_KEY") ?: ""
 
 android {
     namespace = "com.slacker.app"
@@ -40,10 +41,6 @@ android {
         buildConfig = true
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
-    }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -66,7 +63,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.1")
 
     // Compose BOM
-    implementation(platform("androidx.compose:compose-bom:2024.06.00"))
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
