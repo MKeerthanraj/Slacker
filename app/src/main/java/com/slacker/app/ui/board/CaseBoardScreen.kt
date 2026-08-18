@@ -29,6 +29,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -117,7 +118,7 @@ fun CaseBoardScreen(viewModel: AppViewModel) {
                 val sectionKey = "case_${status.name}"
                 val isCollapsed = viewModel.collapsedSections.value.contains(sectionKey)
                 val sectionCases = cases.filter { it.status == status }.sortedBy { case ->
-                    configByLevel[case.severityLevel]?.let { SlaCalculator.nextCheckpoint(case, it)?.dueAtEpochMillis }
+                    configByLevel[case.severityLevel]?.let { SlaCalculator.nextPending(case, it)?.dueAtEpochMillis }
                         ?: Long.MAX_VALUE
                 }
 
@@ -137,14 +138,12 @@ fun CaseBoardScreen(viewModel: AppViewModel) {
                         item(key = "${status.name}-empty") { EmptyStatusCard() }
                     } else {
                         items(sectionCases, key = { it.id }) { supportCase ->
-                            configByLevel[supportCase.severityLevel]?.let { config ->
-                                CaseCard(
-                                    case = supportCase,
-                                    config = config,
-                                    onOpen = { editing = supportCase },
-                                    onStatus = { viewModel.updateCaseStatus(supportCase, it) }
-                                )
-                            }
+                            CaseCard(
+                                case = supportCase,
+                                config = configByLevel[supportCase.severityLevel],
+                                onOpen = { editing = supportCase },
+                                onStatus = { viewModel.updateCaseStatus(supportCase, it) }
+                            )
                         }
                     }
                 }
@@ -156,6 +155,7 @@ fun CaseBoardScreen(viewModel: AppViewModel) {
         CaseEditorDialog(
             initial = supportCase,
             productOptions = viewModel.productAlignments.value,
+            config = configByLevel[supportCase.severityLevel],
             onDismiss = { editing = null },
             onSave = {
                 viewModel.saveCase(it)
@@ -184,7 +184,7 @@ private fun StatusJumpMenu(
             singleLine = true,
             label = { Text("Jump to status") },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier.menuAnchor().fillMaxWidth()
+            modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth()
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             statuses.forEach { status ->
@@ -235,10 +235,10 @@ private fun EmptyStatusCard() {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CaseCard(case: SupportCaseEntity, config: SeverityConfigEntity, onOpen: () -> Unit, onStatus: (CaseStatus) -> Unit) {
-    val next = SlaCalculator.nextCheckpoint(case, config)
+private fun CaseCard(case: SupportCaseEntity, config: SeverityConfigEntity?, onOpen: () -> Unit, onStatus: (CaseStatus) -> Unit) {
+    val next = config?.let { SlaCalculator.nextPending(case, it) }
     val displayDue = next?.dueAtEpochMillis
-    val overdue = displayDue != null && displayDue < System.currentTimeMillis() && case.status != CaseStatus.RCA_COMPLETE
+    val overdue = displayDue != null && displayDue < System.currentTimeMillis()
     val statusStyle = caseStatusStyle(case.status)
     val criticality = criticalityStyle(case.criticality)
     var menu by remember { mutableStateOf(false) }
@@ -261,13 +261,14 @@ private fun CaseCard(case: SupportCaseEntity, config: SeverityConfigEntity, onOp
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    AssistChip(onClick = {}, label = { Text(config.label) })
+                    AssistChip(onClick = {}, label = { Text(config?.label ?: "Sev ${case.severityLevel}") })
                     AssistChip(onClick = {}, label = { Text("${criticality.emoji} ${criticality.label}") })
                     AssistChip(onClick = { menu = true }, label = { Text(statusStyle.label) })
                 }
-                displayDue?.let { due ->
+                if (next != null && displayDue != null) {
+                    val due = displayDue
                     val countdown = getDueCountdown(due)
-                    val dateText = (if (overdue) "Due breached " else "Next status due ") + formatDate(due)
+                    val dateText = "${next.name} SLA " + (if (overdue) "breached — was due " else "due ") + formatDate(due)
                     val text = if (countdown != null) "$dateText ($countdown)" else dateText
                     Spacer(Modifier.height(6.dp))
                     Text(

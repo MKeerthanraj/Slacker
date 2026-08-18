@@ -1,64 +1,139 @@
 package com.slacker.app.data
 
+import com.slacker.app.data.entities.CaseStatus
 import com.slacker.app.data.entities.SeverityConfigEntity
 import com.slacker.app.data.entities.SupportCaseEntity
-import com.slacker.app.data.entities.CaseStatus
 import java.util.Calendar
 
-data class SlaCheckpoint(
+const val SLA_PASSED = "PASSED"
+const val SLA_BREACHED = "BREACHED"
+
+/**
+ * One of the four SLA stages of a support case, with everything the UI needs:
+ * the computed due time, the stored pass/breach result (empty until the case
+ * crosses the stage's gate status), and whether the gate has already been
+ * passed (so legacy stages with no recorded timing aren't shown as "next").
+ */
+data class SlaStageState(
     val name: String,
-    val dueAtEpochMillis: Long,
-    val isDone: Boolean,
-    val isOverdue: Boolean
-)
+    val dueAtEpochMillis: Long?,        // null while the anchor is unknown (RCA before Done)
+    val result: String,                 // "", SLA_PASSED or SLA_BREACHED
+    val evaluatedAtEpochMillis: Long?,
+    val gateReached: Boolean
+) {
+    /** True when this stage's clock is still running — this is what the board card shows. */
+    val isPending: Boolean get() = result.isEmpty() && !gateReached && dueAtEpochMillis != null
+}
 
 object SlaCalculator {
 
     private const val HOUR_MILLIS = 3_600_000L
 
     /**
-     * Returns every checkpoint for a case with its computed due timestamp,
-     * given the matching severity config. RCA is only computed once the case
-     * has actually moved to Done (that's its anchor).
+     * Scores every SLA stage whose gate the case has crossed, using the saved
+     * status history for the transition times, and stores the pass/breach
+     * outcome on the case. Deterministic and idempotent: it can safely re-run
+     * on every save (and once at startup to backfill pre-existing cases).
      *
-     * Weekends (Saturday & Sunday) don't count toward any SLA clock — the due
-     * date calculation skips straight over them.
+     * Stage gates — reaching one of these statuses stops that SLA clock:
+     *  - Initial Triage: Under Initial Review
+     *  - Labs Review:    On Hold, Ready for Development or Pending Outside Labs
+     *  - Final:          Done Ready to Deploy (also anchors the RCA clock)
+     *  - RCA:            RCA Complete
+     * Done No Code Changes settles every still-open stage at the moment of the
+     * move. A later gate also settles any earlier stage that was skipped over.
      */
-    fun checkpointsFor(case: SupportCaseEntity, config: SeverityConfigEntity): List<SlaCheckpoint> {
-        val now = System.currentTimeMillis()
-        val created = case.createdAtEpochMillis
+    fun reconcile(case: SupportCaseEntity, config: SeverityConfigEntity): SupportCaseEntity {
+        val history = parseHistory(case.statusHistory)
+        val noCodeAt = history[CaseStatus.DONE_NO_CODE_CHANGES]
+        val doneAt = history[CaseStatus.DONE_READY_TO_DEPLOY]
+            ?: case.movedToDoneAtEpochMillis
+            ?: noCodeAt
+        val labsAt = listOfNotNull(
+            history[CaseStatus.ON_HOLD],
+            history[CaseStatus.READY_FOR_DEVELOPMENT],
+            history[CaseStatus.PENDING_OUTSIDE_LABS]
+        ).minOrNull() ?: doneAt
+        val triageAt = history[CaseStatus.UNDER_INITIAL_REVIEW] ?: labsAt
+        val rcaAt = history[CaseStatus.RCA_COMPLETE] ?: noCodeAt
 
-        val result = mutableListOf(
-            build(
-                "Initial Triage",
-                addBusinessHours(created, config.initialTriageHours),
-                case.triageDone || case.status != CaseStatus.NEW, now
+        val created = case.createdAtEpochMillis
+        val triageDue = addBusinessHours(created, config.initialTriageHours)
+        val labsDue = addBusinessHours(created, config.labsReviewHours)
+        val finalDue = addBusinessHours(created, config.finalHours)
+        val rcaDue = doneAt?.let { addBusinessHours(it, config.rcaHours) }
+
+        fun eval(at: Long?, due: Long?, keepResult: String, keepAt: Long?): Pair<String, Long?> =
+            if (at != null && due != null) {
+                (if (at <= due) SLA_PASSED else SLA_BREACHED) to at
+            } else {
+                keepResult to keepAt
+            }
+
+        val (triageResult, triageEvalAt) = eval(triageAt, triageDue, case.triageResult, case.triageEvaluatedAtEpochMillis)
+        val (labsResult, labsEvalAt) = eval(labsAt, labsDue, case.labsResult, case.labsEvaluatedAtEpochMillis)
+        val (finalResult, finalEvalAt) = eval(doneAt, finalDue, case.finalResult, case.finalEvaluatedAtEpochMillis)
+        val (rcaResult, rcaEvalAt) = eval(rcaAt, rcaDue, case.rcaResult, case.rcaEvaluatedAtEpochMillis)
+
+        return case.copy(
+            // History is the authority: an edited Done date re-anchors the RCA clock
+            movedToDoneAtEpochMillis = doneAt ?: case.movedToDoneAtEpochMillis,
+            triageResult = triageResult, triageEvaluatedAtEpochMillis = triageEvalAt,
+            labsResult = labsResult, labsEvaluatedAtEpochMillis = labsEvalAt,
+            finalResult = finalResult, finalEvaluatedAtEpochMillis = finalEvalAt,
+            rcaResult = rcaResult, rcaEvaluatedAtEpochMillis = rcaEvalAt,
+            triageDone = case.triageDone || triageResult.isNotEmpty(),
+            labsReviewDone = case.labsReviewDone || labsResult.isNotEmpty(),
+            finalDone = case.finalDone || finalResult.isNotEmpty(),
+            rcaDone = case.rcaDone || rcaResult.isNotEmpty()
+        )
+    }
+
+    /** All four stages in order — this backs the SLA history view. */
+    fun stageStates(case: SupportCaseEntity, config: SeverityConfigEntity): List<SlaStageState> {
+        val created = case.createdAtEpochMillis
+        val ordinal = case.status.ordinal
+        val settledEverything = case.status == CaseStatus.DONE_NO_CODE_CHANGES
+        val rcaDue = case.movedToDoneAtEpochMillis?.let { addBusinessHours(it, config.rcaHours) }
+        return listOf(
+            SlaStageState(
+                "Initial Triage", addBusinessHours(created, config.initialTriageHours),
+                case.triageResult, case.triageEvaluatedAtEpochMillis,
+                gateReached = case.status != CaseStatus.NEW
             ),
-            build(
-                "Labs Review",
-                addBusinessHours(created, config.labsReviewHours),
-                case.labsReviewDone || case.status.ordinal >= CaseStatus.UNDER_DEVELOPMENT.ordinal || case.status == CaseStatus.DONE_NO_CODE_CHANGES, now
+            SlaStageState(
+                "Labs Review", addBusinessHours(created, config.labsReviewHours),
+                case.labsResult, case.labsEvaluatedAtEpochMillis,
+                gateReached = ordinal >= CaseStatus.ON_HOLD.ordinal
             ),
-            build(
-                "Final SLA",
-                addBusinessHours(created, config.finalHours),
-                case.finalDone || case.status == CaseStatus.RCA_COMPLETE || case.status == CaseStatus.DONE_NO_CODE_CHANGES, now
+            SlaStageState(
+                "Final", addBusinessHours(created, config.finalHours),
+                case.finalResult, case.finalEvaluatedAtEpochMillis,
+                gateReached = ordinal >= CaseStatus.DONE_READY_TO_DEPLOY.ordinal
+            ),
+            SlaStageState(
+                "RCA", rcaDue,
+                case.rcaResult, case.rcaEvaluatedAtEpochMillis,
+                gateReached = case.status == CaseStatus.RCA_COMPLETE || settledEverything
             )
         )
-
-        // RCA only starts counting once the case has actually moved to Done
-        case.movedToDoneAtEpochMillis?.let { doneAt ->
-            result.add(
-                build(
-                    "RCA",
-                    addBusinessHours(doneAt, config.rcaHours),
-                    case.rcaDone, now
-                )
-            )
-        }
-
-        return result
     }
+
+    /** The single stage whose clock is currently running — shown on the board card. */
+    fun nextPending(case: SupportCaseEntity, config: SeverityConfigEntity): SlaStageState? =
+        stageStates(case, config).firstOrNull { it.isPending }
+
+    /** "STATUS:millis|STATUS:millis" -> earliest recorded time per status. */
+    fun parseHistory(statusHistory: String): Map<CaseStatus, Long> =
+        statusHistory.split("|")
+            .mapNotNull { entry ->
+                val status = runCatching { CaseStatus.valueOf(entry.substringBefore(":")) }.getOrNull()
+                    ?: return@mapNotNull null
+                val ts = entry.substringAfter(":", "").toLongOrNull() ?: return@mapNotNull null
+                status to ts
+            }
+            .groupBy({ it.first }, { it.second })
+            .mapValues { (_, times) -> times.min() }
 
     /**
      * Adds `hours` of "business time" to `startMillis`, treating all of Saturday
@@ -92,6 +167,15 @@ object SlaCalculator {
             // the next iteration evaluates whether that new day is a weekend day.
         }
 
+        // A deadline landing exactly on a weekend boundary (midnight into
+        // Saturday) rolls to Monday 00:00 — the weekend never counts.
+        while (true) {
+            val cal = Calendar.getInstance().apply { timeInMillis = current }
+            val day = cal.get(Calendar.DAY_OF_WEEK)
+            if (day != Calendar.SATURDAY && day != Calendar.SUNDAY) break
+            current = startOfNextDay(cal)
+        }
+
         return current
     }
 
@@ -104,18 +188,4 @@ object SlaCalculator {
         next.set(Calendar.MILLISECOND, 0)
         return next.timeInMillis
     }
-
-    private fun build(name: String, dueAt: Long, done: Boolean, now: Long) =
-        SlaCheckpoint(
-            name = name,
-            dueAtEpochMillis = dueAt,
-            isDone = done,
-            isOverdue = !done && now > dueAt
-        )
-
-    /** The single "next thing due" for a case — used for board card badges & sorting. */
-    fun nextCheckpoint(case: SupportCaseEntity, config: SeverityConfigEntity): SlaCheckpoint? =
-        checkpointsFor(case, config)
-            .filter { !it.isDone }
-            .minByOrNull { it.dueAtEpochMillis }
 }

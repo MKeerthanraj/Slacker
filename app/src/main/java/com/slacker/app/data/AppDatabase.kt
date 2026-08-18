@@ -52,7 +52,7 @@ class AppConverters {
 
 @Database(
     entities = [TaskEntity::class, SupportCaseEntity::class, SeverityConfigEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 @TypeConverters(AppConverters::class)
@@ -87,13 +87,28 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Additive only — existing rows keep all their data and get
+                // scored from statusHistory by SlaCalculator.reconcile at startup.
+                db.execSQL("ALTER TABLE support_cases ADD COLUMN triageResult TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE support_cases ADD COLUMN triageEvaluatedAtEpochMillis INTEGER")
+                db.execSQL("ALTER TABLE support_cases ADD COLUMN labsResult TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE support_cases ADD COLUMN labsEvaluatedAtEpochMillis INTEGER")
+                db.execSQL("ALTER TABLE support_cases ADD COLUMN finalResult TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE support_cases ADD COLUMN finalEvaluatedAtEpochMillis INTEGER")
+                db.execSQL("ALTER TABLE support_cases ADD COLUMN rcaResult TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE support_cases ADD COLUMN rcaEvaluatedAtEpochMillis INTEGER")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "sla_tracker.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).addCallback(object : Callback() {
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
                         super.onCreate(db)
                         // Seed the default Sev1-5 SLA scheme on first launch

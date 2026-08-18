@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -12,7 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -37,6 +38,16 @@ class MainActivity : ComponentActivity() {
     private val requestNotifPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* no-op: user's choice either way */ }
+
+    // Compose-ui hover bug (issuetracker b/341828232): stylus/hover pointers can
+    // leave a stale ACTION_HOVER_EXIT and crash mid-scroll. Fixed in compose-ui
+    // 1.7, kept as a guard so a regression can never take the whole app down.
+    override fun dispatchGenericMotionEvent(ev: MotionEvent?): Boolean =
+        try {
+            super.dispatchGenericMotionEvent(ev)
+        } catch (e: IllegalStateException) {
+            true
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -102,7 +113,7 @@ private fun AppRoot(darkMode: Boolean, onToggleTheme: () -> Unit) {
 
                 items.forEach { screen ->
                     val icon = when (screen) {
-                        Screen.Tasks -> Icons.Filled.List
+                        Screen.Tasks -> Icons.AutoMirrored.Filled.List
                         Screen.Cases -> Icons.Filled.Warning
                         Screen.QuickAdd -> Icons.Filled.Add
                         Screen.Settings -> Icons.Filled.Settings
