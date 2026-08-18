@@ -1,0 +1,7 @@
+# RENAME THIS FILE TO "local.properties" (remove .template)
+# Android Studio normally auto-generates local.properties with your SDK path.
+# Just ADD this line to your existing local.properties file:
+
+GROQ_API_KEY=your_groq_api_key_here
+
+# sdk.dir=/path/to/your/Android/sdk   <-- this line already exists, don't remove it
