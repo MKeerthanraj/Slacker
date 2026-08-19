@@ -206,6 +206,7 @@ fun TaskEditorDialog(
 fun CaseEditorDialog(
     initial: SupportCaseEntity,
     productOptions: List<String>,
+    severityConfigs: List<SeverityConfigEntity> = emptyList(),
     config: SeverityConfigEntity? = null,
     onDismiss: () -> Unit,
     onSave: (SupportCaseEntity) -> Unit
@@ -213,6 +214,7 @@ fun CaseEditorDialog(
     var title by remember(initial) { mutableStateOf(initial.title) }
     var description by remember(initial) { mutableStateOf(initial.description) }
     var product by remember(initial) { mutableStateOf(initial.productAlignment) }
+    var severity by remember(initial) { mutableStateOf(initial.severityLevel) }
     var criticality by remember(initial) { mutableStateOf(initial.criticality) }
     var status by remember(initial) { mutableStateOf(initial.status) }
     var created by remember(initial) { mutableStateOf(formatDateInput(initial.createdAtEpochMillis)) }
@@ -240,6 +242,15 @@ fun CaseEditorDialog(
                 OutlinedTextField(title, { title = it }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(description, { description = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
                 SelectField("Product alignment", product.ifBlank { productOptions.firstOrNull().orEmpty() }, productOptions.ifEmpty { listOf("General") }) { product = it }
+                if (severityConfigs.isNotEmpty()) {
+                    SelectField(
+                        label = "Severity",
+                        value = severityConfigs.firstOrNull { it.severityLevel == severity }?.label ?: "Sev $severity",
+                        options = severityConfigs.map { it.label }
+                    ) { selected ->
+                        severity = severityConfigs.first { it.label == selected }.severityLevel
+                    }
+                }
                 SelectField("Criticality", criticality.name.lowercase().replaceFirstChar { it.titlecase() }, CaseCriticality.entries.map { it.name.lowercase().replaceFirstChar { c -> c.titlecase() } }) {
                     criticality = CaseCriticality.valueOf(it.uppercase())
                 }
@@ -266,7 +277,7 @@ fun CaseEditorDialog(
                                 "✅ Passed" + (stage.evaluatedAtEpochMillis?.let { " on ${formatDate(it)}" } ?: "")
                             stage.result == SLA_BREACHED ->
                                 "❌ Breached" + (stage.evaluatedAtEpochMillis?.let { " on ${formatDate(it)}" } ?: "") +
-                                    (stage.dueAtEpochMillis?.let { " (was due ${formatDate(it)})" } ?: "")
+                                        (stage.dueAtEpochMillis?.let { " (was due ${formatDate(it)})" } ?: "")
                             stage.gateReached -> "No timing recorded — add the status dates above and save"
                             stage.dueAtEpochMillis != null -> "⏳ Running — due ${formatDate(stage.dueAtEpochMillis)}"
                             else -> "⏳ Starts when the case reaches Done"
@@ -285,7 +296,7 @@ fun CaseEditorDialog(
             Button(
                 enabled = title.isNotBlank(),
                 onClick = {
-                    onSave(initial.copy(title = title.trim(), description = description, productAlignment = product.ifBlank { productOptions.firstOrNull().orEmpty() }, criticality = criticality, status = status, createdAtEpochMillis = parseDateInput(created) ?: initial.createdAtEpochMillis, assignee = assignee, notes = notes, statusHistory = buildStatusHistory(existingHistory, status, triageDoneDate, labsDoneDate, finalDoneDate, rcaDoneDate)))
+                    onSave(initial.copy(title = title.trim(), description = description, productAlignment = product.ifBlank { productOptions.firstOrNull().orEmpty() }, severityLevel = severity, criticality = criticality, status = status, createdAtEpochMillis = parseDateInput(created) ?: initial.createdAtEpochMillis, assignee = assignee, notes = notes, statusHistory = buildStatusHistory(existingHistory, status, triageDoneDate, labsDoneDate, finalDoneDate, rcaDoneDate)))
                 }
             ) { Text("Save") }
         },

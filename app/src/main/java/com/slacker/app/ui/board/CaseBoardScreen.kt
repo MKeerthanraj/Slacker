@@ -155,6 +155,7 @@ fun CaseBoardScreen(viewModel: AppViewModel) {
         CaseEditorDialog(
             initial = supportCase,
             productOptions = viewModel.productAlignments.value,
+            severityConfigs = configs,
             config = configByLevel[supportCase.severityLevel],
             onDismiss = { editing = null },
             onSave = {
